@@ -76,7 +76,7 @@ impl Drop for RadosCtxImpl {
   fn drop (&mut self) {
     unsafe {rados::rados_ioctx_destroy (self.ctx)}}}
 
-/// An io context encapsulates a few settings for all I/O operations done on it.
+/// An IO context encapsulates a few settings for all I/O operations done on it.
 ///
 /// * `pool` - set when the io context is created (see rados_ioctx_create()).
 /// * snapshot context for writes (see `rados_ioctx_selfmanaged_snap_set_write_ctx`())
@@ -235,9 +235,7 @@ impl RadosWriteCompletion {
 impl Drop for RadosWriteCompletion {
   fn drop (&mut self) {
     if self.pc != null_mut() {
-      { let _lock = match self.dugout.task.lock() {
-          Ok (lock) => lock,
-          Err (err) => panic! ("RadosWriteCompletion::drop] !lock: {}", err)};
+      { let _lock = match self.dugout.task.lock() {Ok (lock) => lock, Err (err) => panic! ("RadosWriteCompletion::drop] !lock: {}", err)};
 
         // NB: We *must* either wait for the callback or prevent it from being fired, because we lended a `task` pointer to the callback.
         // Dropping before the callback fires or is cancelled will leave it with a dangling pointer.
@@ -330,9 +328,16 @@ impl RadosReadCompletion {
 impl Drop for RadosReadCompletion {
   fn drop (&mut self) {
     if self.pc != null_mut() {
-      // NB: We *must* either wait for the callback or prevent it from being fired, because we lended a `task` pointer to the callback.
-      // Dropping before the callback fires or is cancelled will leave it with a dangling pointer.
-      unsafe {rados::rados_aio_cancel (self.ctx.0.ctx, self.pc)};
+      { let _lock = match self.dugout.task.lock() {Ok (lock) => lock, Err (err) => panic! ("RadosReadCompletion::drop] !lock: {}", err)};
+
+        // NB: We *must* either wait for the callback or prevent it from being fired, because we lended a `task` pointer to the callback.
+        // Dropping before the callback fires or is cancelled will leave it with a dangling pointer.
+        unsafe {rados::rados_aio_cancel (self.ctx.0.ctx, self.pc)}; }
+
+      // I know that, at least on Jewel (Ceph 10.2.3) and with `rados_aio_write_full`,
+      // `rados_shutdown` would hang (!) if, having invoked `rados_aio_cancel`, we'd skip bashing the `rados_aio_wait_for_complete_and_cb`.
+      // Erring on the side of caution I'd use it here as well.
+      unsafe {rados::rados_aio_wait_for_complete_and_cb (self.pc);}
 
       let pc = self.pc;
       self.pc = null_mut();
