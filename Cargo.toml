@@ -1,0 +1,28 @@
+[package]
+name = "rados_hi"
+version = "0.1.0"
+authors = ["Artem <artemciy@gmail.com>"]
+description = "Opinionated high-level wrapper for librados (Ceph)."
+repository = "https://github.com/ArtemGr/rados.hi.rs"
+license = "MIT"
+keywords = ["ceph"]
+
+[lib]
+name = "rados_hi"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+doctest = false
+
+[dependencies]
+ceph-rust = "0.1"
+futures = "0.1"
+gstuff = "0.1.1"
+libc = "0.2"
+
+[[example]]
+name = "bench"
+path = "examples/bench.rs"
+
+[dev-dependencies]
+scoped-pool = "1"
+timeit = "0.1"
