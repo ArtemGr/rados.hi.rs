@@ -63,7 +63,7 @@ fn ceph_bench (debug: bool) -> Result<(), String> {
           let ctx = ctx.clone();
           scope.execute (move || {
             if debug {println! ("Loop {}, thread {}, writing to {}...", loop_num, unsafe {libc::pthread_self()}, oid)}
-            ctx.write_full_bl (&oid, text.as_bytes()) .expect ("!write_full");});
+            ctx.write_full_bl (&oid, text.as_bytes()) .expect ("!write_full_bl");});
           ops += 1;}})});
     assert_eq! (inner_loops, ops / outer_loops);
     println! ("Threads: {}; ops {} ({} inner / {:.3} sec); write_full per second: {:.1}.",
