@@ -161,7 +161,7 @@ impl RadosCtx {
       Err (io::Error::from_raw_os_error (-rc))}}}
 
 /// Asynchronous RADOS operations as futures.
-mod ops {
+pub mod ops {
   use ceph_rust::rados;
   use futures::{self, Async, Future, Poll};
   use futures::task::Task;
