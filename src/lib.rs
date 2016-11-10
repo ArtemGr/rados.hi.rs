@@ -111,7 +111,7 @@ impl RadosCtx {
   /// Asychronously write an entire object.
   /// The object is filled with the provided data.
   /// If the object exists, it is atomically truncated and then written. Queues the write_full and returns.
-  pub fn write_full (&self, oid: &str, bytes: &[u8]) -> Result<ops::RadosWriteCompletion, String> {
+  pub fn write_full (&self, oid: &str, bytes: &[u8]) -> ops::RadosWriteCompletion {
     ops::RadosWriteCompletion::write_full (self, oid, bytes)}
 
   pub fn write_full_bl (&self, oid: &str, bytes: &[u8]) -> Result<(), String> {
@@ -165,6 +165,7 @@ mod ops {
   use ceph_rust::rados;
   use futures::{self, Async, Future, Poll};
   use futures::task::Task;
+  use gstuff::filename;
   use libc;
   use std::error::Error;
   use std::ffi::CString;
@@ -175,7 +176,7 @@ mod ops {
   use super::RadosCtx;
 
   /// Structure passed to the completion callback. Allocated on heap in order not to dangle around.
-  struct RadosWriteDugout {task: Mutex<Option<Task>>}
+  pub struct RadosWriteDugout {task: Mutex<Option<Task>>}
 
   extern "C" fn rs_rados_write_complete (_pc: rados::rados_completion_t, dugout: *mut libc::c_void) {
     let dugout: &mut RadosWriteDugout = unsafe {transmute (dugout)};
@@ -184,17 +185,20 @@ mod ops {
       Err (err) => panic! ("rs_rados_write_complete] !lock: {}", err)};
     if let Some (ref task) = *lock {task.unpark()}}
 
-  pub struct RadosWriteCompletion {
-    pub ctx: RadosCtx,
-    pub pc: rados::rados_completion_t,
-    dugout: Box<RadosWriteDugout>}
+  pub enum RadosWriteCompletion {
+    Going {ctx: RadosCtx, pc: rados::rados_completion_t, dugout: Box<RadosWriteDugout>},
+    Error (String)}
   unsafe impl Send for RadosWriteCompletion {}
   unsafe impl Sync for RadosWriteCompletion {}
   impl RadosWriteCompletion {
     /// Asychronously write an entire object.
     /// The object is filled with the provided data.
     /// If the object exists, it is atomically truncated and then written. Queues the write_full and returns.
-    pub fn write_full (ctx: &RadosCtx, oid: &str, bytes: &[u8]) -> Result<RadosWriteCompletion, String> {
+    pub fn write_full (ctx: &RadosCtx, oid: &str, bytes: &[u8]) -> RadosWriteCompletion {
+      macro_rules! try_r {($e: expr) => {match $e {
+        Ok (ok) => ok,
+        Err (err) => {return RadosWriteCompletion::Error (format! ("{}:{}] {}", filename (file!()), line!(), err));}}}}
+
       let mut pc: rados::rados_completion_t = null_mut();
 
       let dugout = Box::new (RadosWriteDugout {task: Mutex::new (None)});
@@ -216,9 +220,9 @@ mod ops {
         Some (rs_rados_write_complete),
         None,
         &mut pc)};
-      if rc != 0 {return ERR! ("!rados_aio_create_completion: {}", rc)}
+      if rc != 0 {try_r! (ERR! ("!rados_aio_create_completion: {}", rc))}
 
-      let oid = try_s! (CString::new (oid));
+      let oid = try_r! (CString::new (oid));
 
       // Asychronously write an entire object.
       // The object is filled with the provided data.
@@ -227,70 +231,65 @@ mod ops {
       let rc = unsafe {rados::rados_aio_write_full (ctx.0.ctx, oid.as_ptr() as *const i8, pc, bytes.as_ptr() as *const i8, bytes.len())};
       if rc != 0 {
         unsafe {rados::rados_aio_release (pc)};
-        return ERR! ("!rados_aio_write_full: {}", rc)}
+        try_r! (ERR! ("!rados_aio_write_full: {}", rc))}
 
-      Ok (RadosWriteCompletion {
+      RadosWriteCompletion::Going {
         ctx: ctx.clone(),
         pc: pc,
-        dugout: dugout})}
-
-    /// Block until an operation completes.
-    /// This means it is in memory on all replicas.
-    pub fn wait_for_complete (&self) {
-      unsafe {rados::rados_aio_wait_for_complete_and_cb (self.pc);}}
-
-    /// Block until an operation is safe.
-    /// This means it is on stable storage on all replicas.
-    pub fn wait_for_safe (&self) {
-      unsafe {rados::rados_aio_wait_for_safe_and_cb (self.pc)};}}
+        dugout: dugout}}}
   impl Drop for RadosWriteCompletion {
     fn drop (&mut self) {
-      if self.pc != null_mut() {
-        { let _lock = match self.dugout.task.lock() {Ok (lock) => lock, Err (err) => panic! ("RadosWriteCompletion::drop] !lock: {}", err)};
+      if let &mut RadosWriteCompletion::Going {ref ctx, ref mut pc, ref dugout} = self {
+        if *pc != null_mut() {
+          { let _lock = match dugout.task.lock() {Ok (lock) => lock, Err (err) => panic! ("RadosWriteCompletion::drop] !lock: {}", err)};
 
-          // NB: We *must* either wait for the callback or prevent it from being fired, because we lended a `task` pointer to the callback.
-          // Dropping before the callback fires or is cancelled will leave it with a dangling pointer.
-          //
-          // And by design the futures can be cancelled, cf. "https://aturon.github.io/blog/2016/09/07/futures-design/#cancellation".
-          unsafe {rados::rados_aio_cancel (self.ctx.0.ctx, self.pc)}; }
+            // NB: We *must* either wait for the callback or prevent it from being fired, because we lended a `task` pointer to the callback.
+            // Dropping before the callback fires or is cancelled will leave it with a dangling pointer.
+            //
+            // And by design the futures can be cancelled, cf. "https://aturon.github.io/blog/2016/09/07/futures-design/#cancellation".
+            unsafe {rados::rados_aio_cancel (ctx.0.ctx, *pc)}; }
 
-        // Waiting for the [write] to complete seems safer,
-        // but might be counterintuitive and misleading as it differs from the futures cancellable design.
-        // NB: `rados_shutdown` hangs (!) if, relying on `rados_aio_cancel`, we skip this call.
-        unsafe {rados::rados_aio_wait_for_complete_and_cb (self.pc);}
+          // Waiting for the [write] to complete seems safer,
+          // but might be counterintuitive and misleading as it differs from the futures cancellable design.
+          // NB: `rados_shutdown` hangs (!) if, relying on `rados_aio_cancel`, we skip this call.
+          unsafe {rados::rados_aio_wait_for_complete_and_cb (*pc);}
 
-        let pc = self.pc;
-        self.pc = null_mut();
-        // Release a completion.
-        // Call this when you no longer need the completion. It may not be freed immediately if the operation is not acked and committed.
-        unsafe {rados::rados_aio_release (pc)};}}}
+          // Release a completion.
+          // Call this when you no longer need the completion. It may not be freed immediately if the operation is not acked and committed.
+          unsafe {rados::rados_aio_release (*pc)};
+          *pc = null_mut();}}}}
   impl Future for RadosWriteCompletion {
     type Item = ();
     /// Rados errors returned with `std::io::Error::from_raw_os_error`.
     ///
     /// Use `is_not_found` to check for `ENOENT`.
     type Error = Box<Error>;
+    #[allow(unused_variables)]
     fn poll (&mut self) -> Poll<(), Box<Error>> {
-      // So to implement the `Future::poll` we should:
-      // 1) If Ceph hasn't called back yet, use `futures::task::park()` to obtain a `Task`, then return `futures::Async::NotReady`.
-      // 2) When Ceph calls back, if we've been `poll`ed and thus obtained a `Task` in (1), then invoke `Task::unpark()`.
-      // Literature:
-      // https://docs.rs/futures/0.1/futures/trait.Future.html#tymethod.poll
-      // https://aturon.github.io/blog/2016/09/07/futures-design/
-      // https://docs.rs/futures/0.1/futures/task/fn.park.html
+      match self {
+        &mut RadosWriteCompletion::Error (ref err) => return Err (From::from (err.clone())),
+        &mut RadosWriteCompletion::Going {ref ctx, ref pc, ref dugout} => {
+          // So to implement the `Future::poll` we should:
+          // 1) If Ceph hasn't called back yet, use `futures::task::park()` to obtain a `Task`, then return `futures::Async::NotReady`.
+          // 2) When Ceph calls back, if we've been `poll`ed and thus obtained a `Task` in (1), then invoke `Task::unpark()`.
+          // Literature:
+          // https://docs.rs/futures/0.1/futures/trait.Future.html#tymethod.poll
+          // https://aturon.github.io/blog/2016/09/07/futures-design/
+          // https://docs.rs/futures/0.1/futures/task/fn.park.html
 
-      let mut lock = try_f! (self.dugout.task.lock());  // The lock should prevent the callback from coming earlier and failing to unpark us.
-      *lock = Some (futures::task::park());  // Going to ping this task when the AIO operation completes.
+          // The lock should prevent the callback from coming earlier and failing to unpark us.
+          let mut lock = try_f! (dugout.task.lock());
+          *lock = Some (futures::task::park());  // Going to ping this task when the AIO operation completes.
 
-      // Has an asynchronous operation completed?
-      // This does not imply that the complete callback has finished.
-      let complete = unsafe {rados::rados_aio_is_complete (self.pc)};
-      if complete != 0 {
-        let rc = unsafe {rados::rados_aio_get_return_value (self.pc)};
-        if rc < 0 {return Err (Box::new (io::Error::from_raw_os_error (-rc)))}
-        return Ok (Async::Ready (()))}
+          // Has an asynchronous operation completed?
+          // This does not imply that the complete callback has finished.
+          let complete = unsafe {rados::rados_aio_is_complete (*pc)};
+          if complete != 0 {
+            let rc = unsafe {rados::rados_aio_get_return_value (*pc)};
+            if rc < 0 {return Err (Box::new (io::Error::from_raw_os_error (-rc)))}
+            return Ok (Async::Ready (()))}
 
-      Ok (Async::NotReady)}}
+          Ok (Async::NotReady)}}}}
 
   /// Structure passed to the completion callback. Allocated on heap in order not to dangle around.
   struct RadosReadDugout {task: Mutex<Option<Task>>, buf: Vec<u8>}

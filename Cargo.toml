@@ -1,11 +1,11 @@
 [package]
 name = "rados_hi"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Artem <artemciy@gmail.com>"]
 description = "Opinionated high-level wrapper for librados (Ceph)."
 repository = "https://github.com/ArtemGr/rados.hi.rs"
 license = "MIT"
-keywords = ["ceph"]
+keywords = ["ceph", "database", "distributed"]
 
 [lib]
 name = "rados_hi"

@@ -38,7 +38,7 @@ fn ceph_bench (debug: bool) -> Result<(), String> {
           oid_num += 1; if oid_num > 256 {oid_num = 1}
           let oid = format! ("write_full_{}", oid_num);
           if debug {println! ("Making a future for {}...", oid)}
-          let c = try_s! (ctx.write_full (&oid, text.as_bytes()))
+          let c = ctx.write_full (&oid, text.as_bytes())
             .map (move |_f| {if debug {println! ("Thread {}, AIO completion for {}.", unsafe {libc::pthread_self()}, oid)}});
           futures.push (c);}
         // NB: The dropped futures don't have to finish their work, they are considered *cancelled*,
