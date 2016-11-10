@@ -5,7 +5,6 @@ extern crate futures;
 extern crate libc;
 
 use ceph_rust::rados;
-use std::error::Error;
 use std::ffi::CString;
 use std::io::{self};
 use std::path::Path;
@@ -189,6 +188,12 @@ pub mod ops {
   pub enum RadosError {
     Free (String),
     Rc (i32, io::ErrorKind)}
+  impl RadosError {
+    /// See if we have a -ENOENT error there. ENOENT is "object not found" etc.
+    pub fn not_found (&self) -> bool {
+      match self {
+        &RadosError::Free (_) => false,
+        &RadosError::Rc (_, kind) => kind == io::ErrorKind::NotFound}}}
   impl fmt::Display for RadosError {
     fn fmt (&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
       write! (fmt, "{}", self.description())}}
@@ -271,9 +276,9 @@ pub mod ops {
           *pc = null_mut();}}}}
   impl Future for RadosWriteCompletion {
     type Item = ();
-    /// Rados errors returned with `std::io::Error::from_raw_os_error`.
+    /// Rados errors converted to `io::ErrorKind` with `std::io::Error::from_raw_os_error`.
     ///
-    /// Use `is_not_found` to check for `ENOENT`.
+    /// Use the `not_found` method to check for `ENOENT`.
     type Error = RadosError;
     #[allow(unused_variables)]
     fn poll (&mut self) -> Poll<(), RadosError> {
@@ -370,9 +375,9 @@ pub mod ops {
           *pc = null_mut();}}}}
   impl Future for RadosReadCompletion {
     type Item = Vec<u8>;
-    /// Rados errors returned with `std::io::Error::from_raw_os_error`.
+    /// Rados errors converted to `io::ErrorKind` with `std::io::Error::from_raw_os_error`.
     ///
-    /// Use `is_not_found` to check for `ENOENT`.
+    /// Use the `not_found` method to check for `ENOENT`.
     type Error = RadosError;
     #[allow(unused_variables)]
     fn poll (&mut self) -> Poll<Vec<u8>, RadosError> {
@@ -400,10 +405,3 @@ pub mod ops {
           Ok (Async::Ready (buf))}}}}
 
 }  // End of mod `ops`.
-
-/// See if we have the ENOENT boxed there.
-pub fn is_not_found (err: &Box<Error>) -> bool {
-  if let Some (io) = err.downcast_ref::<std::io::Error>() {
-    if io.kind() == std::io::ErrorKind::NotFound {
-      return true}}
-  false}
