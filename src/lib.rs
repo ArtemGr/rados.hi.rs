@@ -160,6 +160,10 @@ impl RadosCtx {
     } else {
       Err (io::Error::from_raw_os_error (-rc))}}}
 
+macro_rules! err {
+  ($format: expr, $($args: tt)+) => {format! (concat! ("{}:{}] ", $format), filename (file!()), line!(), $($args)+)};
+  ($format: expr) => {format! (concat! ("{}:{}] ", $format), filename (file!()), line!())}}
+
 /// Asynchronous RADOS operations as futures.
 pub mod ops {
   use ceph_rust::rados;
@@ -169,6 +173,7 @@ pub mod ops {
   use libc;
   use std::error::Error;
   use std::ffi::CString;
+  use std::fmt;
   use std::io::{self};
   use std::mem::{transmute, swap};
   use std::ptr::{null_mut};
@@ -185,6 +190,19 @@ pub mod ops {
       Err (err) => panic! ("rs_rados_write_complete] !lock: {}", err)};
     if let Some (ref task) = *lock {task.unpark()}}
 
+  #[derive(Debug)]
+  pub enum RustWriteError {
+    Free (String),
+    Rc (i32, io::ErrorKind)}
+  impl fmt::Display for RustWriteError {
+    fn fmt (&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+      write! (fmt, "{}", self.description())}}
+  impl Error for RustWriteError {
+    fn description (&self) -> &str {
+      match self {
+        &RustWriteError::Free (ref s) => &s[..],
+        &RustWriteError::Rc (_, _) => "RADOS error"}}}
+
   pub enum RadosWriteCompletion {
     Going {ctx: RadosCtx, pc: rados::rados_completion_t, dugout: Box<RadosWriteDugout>},
     Error (String)}
@@ -195,10 +213,6 @@ pub mod ops {
     /// The object is filled with the provided data.
     /// If the object exists, it is atomically truncated and then written. Queues the write_full and returns.
     pub fn write_full (ctx: &RadosCtx, oid: &str, bytes: &[u8]) -> RadosWriteCompletion {
-      macro_rules! try_r {($e: expr) => {match $e {
-        Ok (ok) => ok,
-        Err (err) => {return RadosWriteCompletion::Error (format! ("{}:{}] {}", filename (file!()), line!(), err));}}}}
-
       let mut pc: rados::rados_completion_t = null_mut();
 
       let dugout = Box::new (RadosWriteDugout {task: Mutex::new (None)});
@@ -220,9 +234,11 @@ pub mod ops {
         Some (rs_rados_write_complete),
         None,
         &mut pc)};
-      if rc != 0 {try_r! (ERR! ("!rados_aio_create_completion: {}", rc))}
+      if rc != 0 {return RadosWriteCompletion::Error (err! ("!rados_aio_create_completion: {}", rc))}
 
-      let oid = try_r! (CString::new (oid));
+      let oid = match CString::new (oid) {
+        Ok (oid) => oid,
+        Err (err) => return RadosWriteCompletion::Error (err! ("!oid: {}", err))};
 
       // Asychronously write an entire object.
       // The object is filled with the provided data.
@@ -231,7 +247,7 @@ pub mod ops {
       let rc = unsafe {rados::rados_aio_write_full (ctx.0.ctx, oid.as_ptr() as *const i8, pc, bytes.as_ptr() as *const i8, bytes.len())};
       if rc != 0 {
         unsafe {rados::rados_aio_release (pc)};
-        try_r! (ERR! ("!rados_aio_write_full: {}", rc))}
+        return RadosWriteCompletion::Error (err! ("!rados_aio_write_full: {}", rc))}
 
       RadosWriteCompletion::Going {
         ctx: ctx.clone(),
@@ -263,11 +279,11 @@ pub mod ops {
     /// Rados errors returned with `std::io::Error::from_raw_os_error`.
     ///
     /// Use `is_not_found` to check for `ENOENT`.
-    type Error = Box<Error>;
+    type Error = RustWriteError;
     #[allow(unused_variables)]
-    fn poll (&mut self) -> Poll<(), Box<Error>> {
+    fn poll (&mut self) -> Poll<(), RustWriteError> {
       match self {
-        &mut RadosWriteCompletion::Error (ref err) => return Err (From::from (err.clone())),
+        &mut RadosWriteCompletion::Error (ref err) => return Err (RustWriteError::Free (err.clone())),
         &mut RadosWriteCompletion::Going {ref ctx, ref pc, ref dugout} => {
           // So to implement the `Future::poll` we should:
           // 1) If Ceph hasn't called back yet, use `futures::task::park()` to obtain a `Task`, then return `futures::Async::NotReady`.
@@ -278,7 +294,9 @@ pub mod ops {
           // https://docs.rs/futures/0.1/futures/task/fn.park.html
 
           // The lock should prevent the callback from coming earlier and failing to unpark us.
-          let mut lock = try_f! (dugout.task.lock());
+          let mut lock = match dugout.task.lock() {
+            Ok (lock) => lock,
+            Err (err) => return Err (RustWriteError::Free (err! ("!lock: {}", err)))};
           *lock = Some (futures::task::park());  // Going to ping this task when the AIO operation completes.
 
           // Has an asynchronous operation completed?
@@ -286,7 +304,9 @@ pub mod ops {
           let complete = unsafe {rados::rados_aio_is_complete (*pc)};
           if complete != 0 {
             let rc = unsafe {rados::rados_aio_get_return_value (*pc)};
-            if rc < 0 {return Err (Box::new (io::Error::from_raw_os_error (-rc)))}
+            if rc < 0 {
+              let ie = io::Error::from_raw_os_error (-rc);
+              return Err (RustWriteError::Rc (rc, ie.kind()))}
             return Ok (Async::Ready (()))}
 
           Ok (Async::NotReady)}}}}
