@@ -208,6 +208,9 @@ pub mod ops {
   pub enum RadosError {
     Free (String),
     Rc (i32, io::ErrorKind)}
+  impl From<String> for RadosError {
+    fn from (err: String) -> RadosError {
+      RadosError::Free (err)}}
   impl RadosError {
     /// See if we have a -ENOENT error there. ENOENT is "object not found" etc.
     pub fn not_found (&self) -> bool {
