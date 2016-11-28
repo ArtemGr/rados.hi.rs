@@ -137,7 +137,7 @@ impl RadosCtx {
 
   /// Get object stats (size/mtime).
   pub fn stat_bl (&self, oid: &str) -> Result<Option<ops::RadosStat>, ops::RadosError> {
-    let oid = match CString::new (oid) {Ok (cs) => cs, Err (err) => return Err (ops::RadosError::Free (ERRL! ("!cstring: {}", err)))};
+    let oid = try_f! (CString::new (oid));
     let mut size: u64 = 0;
     let mut time: libc::time_t = 0;
     let rc = unsafe {rados::rados_stat (self.0.ctx, oid.as_ptr(), &mut size as *mut u64, &mut time as *mut libc::time_t)};
@@ -317,9 +317,7 @@ pub mod ops {
           // https://docs.rs/futures/0.1/futures/task/fn.park.html
 
           // The lock should prevent the callback from coming earlier and failing to unpark us.
-          let mut lock = match dugout.task.lock() {
-            Ok (lock) => lock,
-            Err (err) => return Err (RadosError::Free (ERRL! ("!lock: {}", err)))};
+          let mut lock = try_f! (dugout.task.lock());
           *lock = Some (futures::task::park());  // Going to ping this task when the AIO operation completes.
 
           // Has an asynchronous operation completed?
@@ -410,9 +408,7 @@ pub mod ops {
         &mut RadosReadCompletion::Error (ref err) => Err (RadosError::Free (err.clone())),
         &mut RadosReadCompletion::Going {ref ctx, ref pc, ref mut dugout} => {
           // The lock should prevent the callback from coming earlier and failing to unpark us.
-          { let mut lock = match dugout.task.lock() {
-              Ok (lock) => lock,
-              Err (err) => return Err (RadosError::Free (ERRL! ("!lock: {}", err)))};
+          { let mut lock = try_f! (dugout.task.lock());
             *lock = Some (futures::task::park());  // Going to ping this task when the AIO operation completes.
 
             let complete = unsafe {rados::rados_aio_is_complete (*pc)};
@@ -505,9 +501,7 @@ pub mod ops {
         &mut RadosStatCompletion::Error (ref err) => Err (RadosError::Free (err.clone())),
         &mut RadosStatCompletion::Going {ref ctx, ref pc, ref mut dugout} => {
           // The lock should prevent the callback from coming earlier and failing to unpark us.
-          { let mut lock = match dugout.task.lock() {
-              Ok (lock) => lock,
-              Err (err) => return Err (RadosError::Free (ERRL! ("!lock: {}", err)))};
+          { let mut lock = try_f! (dugout.task.lock());
             *lock = Some (futures::task::park());  // Going to ping this task when the AIO operation completes.
 
             let complete = unsafe {rados::rados_aio_is_complete (*pc)};
