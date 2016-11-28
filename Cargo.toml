@@ -24,5 +24,6 @@ name = "bench"
 path = "examples/bench.rs"
 
 [dev-dependencies]
+rand = "0.3"
 scoped-pool = "1"
 timeit = "0.1"

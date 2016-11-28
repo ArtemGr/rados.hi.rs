@@ -6,11 +6,13 @@ extern crate futures;
 #[macro_use] extern crate gstuff;
 extern crate libc;
 extern crate rados_hi;
+extern crate rand;
 extern crate scoped_pool;
 #[macro_use] extern crate timeit;
 
 use futures::Future;
 use rados_hi::*;
+use rand::Rng;
 use scoped_pool::Pool;
 use std::env::args;
 
@@ -21,6 +23,7 @@ fn ceph_bench (debug: bool) -> Result<(), String> {
 
   let rad = try_s! (Rados::connect (&"/etc/ceph/ceph.conf", None));
   let ctx = try_s! (RadosCtx::new (&rad, "test"));
+  let mut rng = rand::weak_rng();
 
   let text = "If a man will begin with certainties, he shall end in doubts; \
     but if he will be content to begin with doubts he shall end in certainties. \
@@ -28,6 +31,42 @@ fn ceph_bench (debug: bool) -> Result<(), String> {
 
   // Measure Ceph throughput, as opposed to a single op latency, by doing writes in parallel.
   // Ceph is heavily bound by synchronous (journal) writes and durability, but the throughput should be okay.
+
+  { for &(outer_loops, inner_loops) in [(5, 128), (2, 1000)].iter() {
+      let sec = timeit_loops! (outer_loops, {
+        if debug {println! ("timeit_loops cycle...")}
+        let mut futures = Vec::with_capacity (inner_loops);
+        for _ in 0..inner_loops {
+          let oid = format! ("random_stuff_{}", rng.next_u64());
+          if debug {println! ("Making a future for {}...", oid)}
+          let c = ctx.stat (&oid)
+            .map (move |_f| {if debug {println! ("Thread {}, AIO completion for {}.", unsafe {libc::pthread_self()}, oid)}});
+          futures.push (c);}
+        // NB: The dropped futures don't have to finish their work, they are considered *cancelled*,
+        // cf. https://aturon.github.io/blog/2016/09/07/futures-design/#cancellation.
+        if debug {println! ("Joining...")}
+        for f in futures {try_s! (f.wait());}});
+      println! ("{} futures / {:.3} sec = {:.1} stat completions per second.", inner_loops, sec, inner_loops as f64 / sec);} }
+
+  for &(threads, inner_loops) in [(1, 2), (16, 64), (64, 256)].iter() {
+    let pool = Pool::new (threads);
+    let mut ops = 0u32;
+    let outer_loops = 10;
+    if debug {println! ("Test started...")}
+    let mut loop_num = 0;
+    let sec = timeit_loops! (outer_loops, {
+      loop_num += 1;
+      pool.scoped (|scope| {
+        for _ in 0..inner_loops {
+          let oid = format! ("random_stuff_{}", rng.next_u64());
+          let ctx = ctx.clone();
+          scope.execute (move || {
+            if debug {println! ("Loop {}, thread {}, writing to {}...", loop_num, unsafe {libc::pthread_self()}, oid)}
+            ctx.stat_bl (&oid) .expect ("!stat_bl");});
+          ops += 1;}})});
+    assert_eq! (inner_loops, ops / outer_loops);
+    println! ("Threads: {}; ops {} ({} inner / {:.3} sec); stat_bl per second: {:.1}.",
+      threads, ops, inner_loops, sec, inner_loops as f64 / sec);}
 
   { let mut oid_num = 0u32;
     for &(outer_loops, inner_loops) in [(5, 128), (2, 1000)].iter() {
@@ -45,7 +84,7 @@ fn ceph_bench (debug: bool) -> Result<(), String> {
         // cf. https://aturon.github.io/blog/2016/09/07/futures-design/#cancellation.
         if debug {println! ("Joining...")}
         for f in futures {try_s! (f.wait());}});
-      println! ("{} futures / {:.3} sec = {:.1} completions per second.", inner_loops, sec, inner_loops as f64 / sec);} }
+      println! ("{} futures / {:.3} sec = {:.1} write_full completions per second.", inner_loops, sec, inner_loops as f64 / sec);} }
 
   for &(threads, inner_loops) in [(1, 2), (16, 64), (64, 256)].iter() {
     let pool = Pool::new (threads);
@@ -66,7 +105,7 @@ fn ceph_bench (debug: bool) -> Result<(), String> {
             ctx.write_full_bl (&oid, text.as_bytes()) .expect ("!write_full_bl");});
           ops += 1;}})});
     assert_eq! (inner_loops, ops / outer_loops);
-    println! ("Threads: {}; ops {} ({} inner / {:.3} sec); write_full per second: {:.1}.",
+    println! ("Threads: {}; ops {} ({} inner / {:.3} sec); write_full_bl per second: {:.1}.",
       threads, ops, inner_loops, sec, inner_loops as f64 / sec);}
 
   Ok(())}
