@@ -8,7 +8,7 @@ RADOS is a High Availability (with configurable replication and/or erasure codin
 rados_hi is an experimental high-level wrapper around the low-level (so far) [ceph-rust](https://github.com/ceph/ceph-rust) bindings. It achieves good parallelization and composability by lifting RADOS AIO operations as [futures](https://github.com/alexcrichton/futures-rs).
 
 NB. This library diverges a bit from [futures](https://github.com/alexcrichton/futures-rs) "lazy evaluation" approach by starting
-the `read` and `write` AIO operations early, as soon as the `Future` is created.
+the AIO operations early, as soon as the `Future` is created.
 You still need to "drive" the follow-up operations in a futures chain.
 That is, in a `read and_then process and_then write` chain the `read` AIO operation will be scheduled with Ceph immediately but the follow-up
 `process` and `write` futures will only be run once the chain is `poll`ed somehow.

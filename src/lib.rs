@@ -101,6 +101,10 @@ impl RadosCtx {
     if rc != 0 {return ERR! ("RadosCtx::new] !rados_ioctx_create: {}", rc)}
     Ok (RadosCtx (Arc::new (RadosCtxImpl {rad: rad.clone(), ctx: io})))}
 
+  /// Access the raw `rados_ioctx_t`.
+  pub fn raw (&self) -> rados::rados_ioctx_t {
+    self.0.ctx}
+
   pub fn write_bl (&self, oid: &str, bytes: &[u8]) -> Result<(), String> {
     let oid = try_s! (CString::new (oid));
     let rc = unsafe {rados::rados_write (self.0.ctx, oid.as_ptr(), bytes.as_ptr() as *const i8, bytes.len() as libc::size_t, 0)};
