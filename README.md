@@ -2,6 +2,7 @@ rados_hi - Opinionated high-level wrapper for librados (Ceph).
 
 [![crate](https://img.shields.io/crates/v/rados_hi.svg)](https://crates.io/crates/rados_hi)
 [![docs](https://docs.rs/rados_hi/badge.svg)](https://docs.rs/rados_hi/)
+![](https://tokei.rs/b1/github/ArtemGr/rados.hi.rs)
 
 RADOS is a High Availability (with configurable replication and/or erasure coding) object store that is both a backbone of the Ceph distributed filesystem and a powerful distributed database of its own.
 
