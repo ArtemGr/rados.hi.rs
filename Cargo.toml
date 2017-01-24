@@ -1,11 +1,14 @@
 [package]
 name = "rados_hi"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Artem <artemciy@gmail.com>"]
 description = "Opinionated high-level wrapper for librados (Ceph)."
 repository = "https://github.com/ArtemGr/rados.hi.rs"
 license = "MIT"
 keywords = ["ceph", "database", "distributed"]
+# https://crates.io/category_slugs
+# TODO: Add "database" once we have the key-value RADOS operations implemeted.
+categories = ["asynchronous", "filesystem"]
 
 [lib]
 name = "rados_hi"
