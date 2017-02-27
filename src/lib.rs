@@ -151,6 +151,10 @@ impl RadosCtx {
       return Err (ops::RadosError::Rc (rc, ie.kind()))}
     Ok (Some (ops::RadosStat {size: size, time: time as i64}))}
 
+  /// Asychronously remove an object.
+  pub fn remove (&self, oid: &str) -> ops::RadosRemoveCompletion {
+    ops::RadosRemoveCompletion::remove (self, oid)}
+
   /// Take an exclusive lock on an object.
   ///
   /// * `oid` - The name of the object.
@@ -326,6 +330,76 @@ pub mod ops {
 
           // Has an asynchronous operation completed?
           // This does not imply that the complete callback has finished.
+          let complete = unsafe {rados::rados_aio_is_complete (*pc)};
+          if complete != 0 {
+            let rc = unsafe {rados::rados_aio_get_return_value (*pc)};
+            if rc < 0 {
+              let ie = io::Error::from_raw_os_error (-rc);
+              return Err (RadosError::Rc (rc, ie.kind()))}
+            return Ok (Async::Ready (()))}
+
+          Ok (Async::NotReady)}}}}
+
+  // --- AIO remove -------
+
+  pub enum RadosRemoveCompletion {
+    Going {ctx: RadosCtx, pc: rados::rados_completion_t, dugout: Box<RadosWriteDugout>},
+    Error (String)}
+  unsafe impl Send for RadosRemoveCompletion {}
+  unsafe impl Sync for RadosRemoveCompletion {}
+  impl RadosRemoveCompletion {
+    /// Asychronously remove an object.
+    pub fn remove (ctx: &RadosCtx, oid: &str) -> RadosRemoveCompletion {
+      // TODO: Refactor: There's a lot of shared code with RadosWriteCompletion.
+      let mut pc: rados::rados_completion_t = null_mut();
+
+      let dugout = Box::new (RadosWriteDugout {task: Mutex::new (None)});
+
+      let rc = unsafe {rados::rados_aio_create_completion (
+        transmute (dugout.as_ref()),
+        Some (rs_rados_write_complete),
+        None,
+        &mut pc)};
+      if rc != 0 {return RadosRemoveCompletion::Error (ERRL! ("!rados_aio_create_completion: {}", rc))}
+
+      let oid = match CString::new (oid) {
+        Ok (oid) => oid,
+        Err (err) => return RadosRemoveCompletion::Error (ERRL! ("!oid: {}", err))};
+
+      let rc = unsafe {rados::rados_aio_remove (ctx.0.ctx, oid.as_ptr() as *const i8, pc)};
+      if rc != 0 {
+        unsafe {rados::rados_aio_release (pc)};
+        return RadosRemoveCompletion::Error (ERRL! ("!rados_aio_remove: {}", rc))}
+
+      RadosRemoveCompletion::Going {
+        ctx: ctx.clone(),
+        pc: pc,
+        dugout: dugout}}}
+  impl Drop for RadosRemoveCompletion {
+    fn drop (&mut self) {
+      // TODO: Refactor: There's a lot of shared code with RadosWriteCompletion.
+      if let &mut RadosRemoveCompletion::Going {ref ctx, ref mut pc, ref dugout} = self {
+        if *pc != null_mut() {
+          { let _lock = match dugout.task.lock() {Ok (lock) => lock, Err (err) => panic! ("RadosRemoveCompletion::drop] !lock: {}", err)};
+            unsafe {rados::rados_aio_cancel (ctx.0.ctx, *pc)}; }
+          unsafe {rados::rados_aio_wait_for_complete_and_cb (*pc);}
+          unsafe {rados::rados_aio_release (*pc)};
+          *pc = null_mut();}}}}
+  impl Future for RadosRemoveCompletion {
+    type Item = ();
+    /// Rados errors converted to `io::ErrorKind` with `std::io::Error::from_raw_os_error`.
+    ///
+    /// Use the `not_found` method to check for `ENOENT`.
+    type Error = RadosError;
+    #[allow(unused_variables)]
+    fn poll (&mut self) -> Poll<(), RadosError> {
+      // TODO: Refactor: There's a lot of shared code with RadosWriteCompletion.
+      match self {
+        &mut RadosRemoveCompletion::Error (ref err) => return Err (RadosError::Free (err.clone())),
+        &mut RadosRemoveCompletion::Going {ref ctx, ref pc, ref dugout} => {
+          let mut lock = try_f! (dugout.task.lock());
+          *lock = Some (futures::task::park());  // Going to ping this task when the AIO operation completes.
+
           let complete = unsafe {rados::rados_aio_is_complete (*pc)};
           if complete != 0 {
             let rc = unsafe {rados::rados_aio_get_return_value (*pc)};
