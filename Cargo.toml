@@ -1,6 +1,6 @@
 [package]
 name = "rados_hi"
-version = "0.2.3"
+version = "0.2.4"
 authors = ["Artem <artemciy@gmail.com>"]
 description = "Opinionated high-level wrapper for librados (Ceph)."
 repository = "https://github.com/ArtemGr/rados.hi.rs"
@@ -19,7 +19,7 @@ doctest = false
 [dependencies]
 ceph-rust = "0.1"
 futures = "0.1"
-gstuff = "0.3"
+gstuff = "0.4"
 libc = "0.2"
 
 [[example]]
